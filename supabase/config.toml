@@ -1,0 +1,5 @@
+[functions.promotion-notification-worker]
+# The function validates a Supabase secret API key through @supabase/server.
+# Built-in JWT validation is intentionally disabled because it cannot validate
+# the newer secret-key format.
+verify_jwt = false
