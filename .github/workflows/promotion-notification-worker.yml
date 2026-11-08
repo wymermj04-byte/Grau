@@ -1,0 +1,69 @@
+
+name: Promotion notification worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Confirm the single disabled-state test
+        required: true
+        type: choice
+        options:
+          - disabled-state-test
+
+permissions: {}
+
+concurrency:
+  group: main-promotion-notification-worker
+  cancel-in-progress: false
+
+jobs:
+  disabled-state-test:
+    if: inputs.confirmation == 'disabled-state-test'
+    runs-on: ubuntu-latest
+    environment: main-supabase-worker
+    timeout-minutes: 2
+
+    steps:
+      - name: Verify disabled worker response
+        env:
+          WORKER_URL: ${{ vars.SUPABASE_PROMOTION_WORKER_URL }}
+          WORKER_SECRET_KEY: ${{ secrets.SUPABASE_PROMOTION_WORKER_SECRET_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "$WORKER_URL" ] || [ -z "$WORKER_SECRET_KEY" ]; then
+            echo "Worker configuration is missing."
+            exit 1
+          fi
+
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+
+          http_status="$(
+            curl --silent --show-error \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
+              --max-time 30 \
+              --request POST \
+              --header "apikey: ${WORKER_SECRET_KEY}" \
+              "${WORKER_URL}"
+          )"
+
+          if [ "$http_status" != "200" ]; then
+            echo "Unexpected worker HTTP status."
+            exit 1
+          fi
+
+          if ! jq -e '
+            type == "object"
+            and .ok == true
+            and .disabled == true
+            and (keys | length == 2)
+          ' "$response_file" >/dev/null; then
+            echo "Worker did not confirm disabled state."
+            exit 1
+          fi
+
+          echo '{"ok":true,"disabled":true}'
