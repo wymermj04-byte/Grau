@@ -30,7 +30,6 @@ module.exports = {
 
 
 
-
   scheme: "new-app",
   slug: "new-app",
   splash: {

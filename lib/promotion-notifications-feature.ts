@@ -1,12 +1,12 @@
 /**
- * Promotion notifications remain fail-closed until the reviewed Main rollout
- * has been explicitly activated and controlled testing is complete. Keeping
- * this local gate false means no notification RPC is issued by the app.
+ * The production client exposes promotion notifications only to the protected
+ * approved-family routes. The server remains authoritative for the Gym 4
+ * rollout plus approved-family authorization.
  */
 export const promotionNotificationsCapability = {
-  enabled: false,
+  enabled: true,
   gymId: 4,
-  reason: 'Promotion notifications are not enabled for this academy yet.',
+  reason: 'Promotion notifications are available to approved Gym 4 families when the academy rollout is enabled.',
 } as const;
 
 export function isPromotionNotificationsEnabled() {

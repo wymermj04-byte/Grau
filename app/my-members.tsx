@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { Text } from '@/components/ui/text';
 import { LoadingIndicator } from '@/components/ui/loading-indicator';
 import { AcademyIdentity } from '@/components/gym/AcademyIdentity';
@@ -18,6 +18,10 @@ import { isMessagingReadOnlyTestEnabled } from '@/lib/messaging-readonly-test-fe
 import { isMessagingControlledTestEnabled } from '@/lib/messaging-controlled-test-feature';
 import { isSelfCheckInEnabledForGym, isSelfCheckInPreviewEnabled } from '@/lib/self-check-in-feature';
 import { isPromotionNotificationsEnabled, promotionNotificationsCapability } from '@/lib/promotion-notifications-feature';
+import { isPromotionNotificationFamilyReadOnlyTestEnabled, promotionNotificationFamilyReadOnlyTestCapability } from '@/lib/promotion-notification-family-readonly-test-feature';
+import { listPromotionNotifications } from '@/lib/promotion-notifications';
+import { listFamilyMessagingConversations } from '@/lib/messaging';
+import { isMessagingEnabled } from '@/lib/messaging-feature';
 
 const isDevelopmentPreview = process.env.NODE_ENV === 'development';
 
@@ -99,13 +103,14 @@ function AcademyWelcome({ gym, children }: { gym?: LinkedGym; children: React.Re
 export default function MyMembersScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
-  const { signOut } = useAuth();
+  const { session, signOut } = useAuth();
   const { accessStatus, linkedMembers, linkedGyms, isResolvingAccess, refreshAccess } = useGymAccess();
   const { announcements, error: announcementError, isLoading: isLoadingAnnouncements, readAnnouncementIds, unreadCount } = useAnnouncementSummary();
   const [isSigningOut, setIsSigningOut] = React.useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = React.useState(false);
   const messagingReadOnlyTestEnabled = isMessagingReadOnlyTestEnabled();
   const messagingControlledTestEnabled = isMessagingControlledTestEnabled();
+  const promotionNotificationFamilyReadOnlyTestEnabled = isPromotionNotificationFamilyReadOnlyTestEnabled();
   const familyCheckInPreviewEnabled = isSelfCheckInPreviewEnabled();
   const hasGym4FamilyMembers = accessStatus === 'family'
     && linkedGyms.some((gym) => gym.gym_id === 4)
@@ -119,6 +124,58 @@ export default function MyMembersScreen() {
   const canOpenPromotionNotifications = isPromotionNotificationsEnabled()
     && linkedGyms.some((gym) => gym.gym_id === promotionNotificationsCapability.gymId)
     && linkedMembers.some((member) => member.gym_id === promotionNotificationsCapability.gymId);
+  const canOpenFamilyPromotionNotifications = canOpenPromotionNotifications
+    && accessStatus === 'family';
+  const canOpenFamilyPromotionNotificationDiagnostic = isDevelopmentPreview
+    && promotionNotificationFamilyReadOnlyTestEnabled
+    && accessStatus === 'family'
+    && linkedGyms.some((gym) => gym.gym_id === promotionNotificationFamilyReadOnlyTestCapability.gymId);
+  const canOpenFamilyMessages = isMessagingEnabled()
+    && accessStatus === 'family'
+    && linkedGyms.length > 0;
+  const canOpenUnifiedNotifications = canOpenFamilyMessages || canOpenFamilyPromotionNotifications;
+  const [unifiedUnreadCount, setUnifiedUnreadCount] = React.useState(0);
+  const notificationRequestVersionRef = React.useRef(0);
+  const notificationScope = `${session?.user.id ?? 'signed-out'}:${accessStatus}:${linkedGyms.map((gym) => gym.gym_id).join(',')}:${linkedMembers.map((member) => `${member.gym_id}:${member.student_id}`).join(',')}`;
+
+  React.useEffect(() => {
+    notificationRequestVersionRef.current += 1;
+    setUnifiedUnreadCount(0);
+  }, [notificationScope]);
+
+  const loadUnifiedUnreadCount = React.useCallback(async () => {
+    const requestVersion = ++notificationRequestVersionRef.current;
+    if (!canOpenUnifiedNotifications) {
+      setUnifiedUnreadCount(0);
+      return;
+    }
+    let unreadCount = 0;
+    if (canOpenFamilyMessages) {
+      try {
+        const conversations = await listFamilyMessagingConversations();
+        unreadCount += conversations.reduce((total, conversation) => total + conversation.unreadCount, 0);
+      } catch {
+        // A category failure must not hide another authorized category's count.
+      }
+    }
+    if (canOpenFamilyPromotionNotifications) {
+      try {
+        const notifications = await listPromotionNotifications('family');
+        unreadCount += notifications.filter((notification) => !notification.readAt).length;
+      } catch {
+        // The server rollout gate remains authoritative; show no inferred count.
+      }
+    }
+    if (requestVersion !== notificationRequestVersionRef.current) return;
+    setUnifiedUnreadCount(unreadCount);
+  }, [canOpenFamilyMessages, canOpenFamilyPromotionNotifications, canOpenUnifiedNotifications]);
+
+  useFocusEffect(React.useCallback(() => {
+    void loadUnifiedUnreadCount();
+    return () => {
+      notificationRequestVersionRef.current += 1;
+    };
+  }, [loadUnifiedUnreadCount]));
 
   const handleSignOut = async () => {
     if (isSigningOut) return;
@@ -180,8 +237,7 @@ export default function MyMembersScreen() {
       <ScrollView contentContainerClassName="px-5 pb-12" showsVerticalScrollIndicator={false}>
         <View className="w-full max-w-4xl self-center pt-4">
           <AcademyWelcome gym={headerGym}>
-              <Pressable accessibilityRole="button" accessibilityLabel={unreadCount > 0 ? `Open announcements, ${unreadCount} unread` : 'Open announcements'} onPress={() => router.push('/announcements')} className="relative h-11 w-11 items-center justify-center rounded-full border border-border bg-card"><LucideIcon name="Bell" className="h-4 w-4 text-foreground" />{unreadCount > 0 ? <View className="absolute -right-1 -top-1 min-w-5 items-center rounded-full bg-primary px-1 py-0.5"><Text className="text-[10px] font-bold text-primary-foreground">{unreadCount > 99 ? '99+' : unreadCount}</Text></View> : null}</Pressable>
-              {canOpenPromotionNotifications ? <Pressable accessibilityRole="button" accessibilityLabel="Open promotion notifications" onPress={() => router.push('/promotion-notifications')} className="h-11 w-11 items-center justify-center rounded-full border border-border bg-card active:bg-accent"><LucideIcon name="Award" className="h-4 w-4 text-foreground" /></Pressable> : null}
+              <Pressable accessibilityRole="button" accessibilityLabel={canOpenUnifiedNotifications ? unifiedUnreadCount > 0 ? `Open notifications, ${unifiedUnreadCount} unread` : 'Open notifications' : unreadCount > 0 ? `Open announcements, ${unreadCount} unread` : 'Open announcements'} onPress={() => router.push(canOpenUnifiedNotifications ? '/notifications' : '/announcements')} className="relative h-11 w-11 items-center justify-center rounded-full border border-border bg-card"><LucideIcon name="Bell" className="h-4 w-4 text-foreground" />{(canOpenUnifiedNotifications ? unifiedUnreadCount : unreadCount) > 0 ? <View className="absolute -right-1 -top-1 min-w-5 items-center rounded-full bg-primary px-1 py-0.5"><Text className="text-[10px] font-bold text-primary-foreground">{(canOpenUnifiedNotifications ? unifiedUnreadCount : unreadCount) > 99 ? '99+' : canOpenUnifiedNotifications ? unifiedUnreadCount : unreadCount}</Text></View> : null}</Pressable>
               <Pressable accessibilityRole="button" accessibilityLabel="Refresh My family" onPress={() => void refreshAccess()} className="h-9 w-9 items-center justify-center rounded-full active:bg-accent"><LucideIcon name="RefreshCw" className="h-4 w-4 text-muted-foreground" /></Pressable>
               <Pressable accessibilityRole="button" accessibilityLabel="Account menu" accessibilityState={{ expanded: accountMenuOpen }} onPress={() => setAccountMenuOpen((open) => !open)} className="h-11 w-11 items-center justify-center rounded-full bg-secondary"><LucideIcon name="CircleUserRound" className="h-5 w-5 text-secondary-foreground" /></Pressable>
           </AcademyWelcome>
@@ -198,6 +254,22 @@ export default function MyMembersScreen() {
               <View>
                 <Text className="font-bold text-primary-foreground">Check In</Text>
                 <Text className="text-xs text-primary-foreground/75">Gym 4 · {canOpenOperationalGym4CheckIn ? 'Request staff-approved check-in' : 'Development preview only'}</Text>
+              </View>
+            </Pressable>
+          ) : null}
+
+          {canOpenFamilyPromotionNotificationDiagnostic ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Test Promotion Notifications"
+              accessibilityHint="Opens the development-only read-only family notification diagnostic"
+              onPress={() => router.push('/dev/family-promotion-notification-inbox')}
+              className="mt-4 min-h-14 flex-row items-center justify-center gap-3 rounded-2xl border border-warning/40 bg-warning/15 px-5 active:opacity-85"
+            >
+              <LucideIcon name="ShieldCheck" className="h-5 w-5 text-warning" />
+              <View>
+                <Text className="font-bold text-foreground">Test Promotion Notifications</Text>
+                <Text className="text-xs text-muted-foreground">Development only · Read-only family inbox check</Text>
               </View>
             </Pressable>
           ) : null}

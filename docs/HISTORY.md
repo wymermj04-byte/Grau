@@ -19,3 +19,12 @@ Class audiences are saved as kids, adults, or mixed; live rosters filter by save
 2026-11-04: A development-only Gym 4 staff pilot-readiness checklist reads selected class, student, and attendance facts without creating self-check-in records or enabling rollout.
 2026-11-04: Operational Family Self-Check-In screens retain exact-payload retry UUIDs and require explicit staff resolution confirmation while remaining disabled.
 Promotion Notifications uses a fresh Gym 4 generation floor on every activation so promotions recorded before or during a disabled interval can never be enqueued after reactivation.
+2026-11-08: A separately disabled, development-only Gym 4 admin utility prepares one explicitly confirmed RPC-only approval of the reviewed notification-test family link with an account-scoped persisted retry UUID.
+2026-11-08: A development-only Gym 4 admin preparation screen isolates notification-test preconditions from separately authorized rollout, promotion, worker, and private-artifact verification actions.
+2026-11-08: A review-only worker amendment renames the local event identifier in the Gym 4 notification dispatcher to eliminate the recorded SQLSTATE 42702 ambiguity without changing delivery safeguards.
+2026-11-09: A development-only approved-family Gym 4 diagnostic can deliberately test the existing promotion-notification inbox RPC while preserving its server rollout gate and read-only contract.
+2026-11-09: The disabled normal Promotion Notifications interface is ready for a separate Gym 4 rollout approval, with account-scoped family unread badges and server-confirmed read acknowledgements.
+2026-11-09: The normal Gym 4 family notification interface is enabled only for a controlled development build test, while production and the server rollout remain disabled.
+2026-11-09: The family dashboard uses one capability-gated notification center for authorized message summaries and promotion records, preserving each server-owned read state.
+2026-11-09: Promotion summaries now personalize generic celebration copy only with the caller’s authorized linked-member name; historical award wording awaits a separately reviewed inbox contract.
+2026-11-09: The normal Gym 4 family promotion-notification route is production-capable while the server rollout remains the sole operational gate.

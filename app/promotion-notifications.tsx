@@ -14,22 +14,22 @@ import {
 } from '@/lib/promotion-notifications';
 import { isPromotionNotificationsEnabled, promotionNotificationsCapability } from '@/lib/promotion-notifications-feature';
 import { formatTimestampDate } from '@/lib/date';
-import { useGymAccess } from '@/providers/GymAccessProvider';
+import { useAuth } from '@/providers/AuthProvider';
+import { useGymAccess, type LinkedMember } from '@/providers/GymAccessProvider';
 
 function notificationAudience(
   accessStatus: ReturnType<typeof useGymAccess>['accessStatus'],
 ): PromotionNotificationAudience | null {
   if (accessStatus === 'family') return 'family';
-  if (accessStatus === 'staff') return 'staff';
   return null;
 }
 
 function notificationCopy(notification: PromotionNotification, audience: PromotionNotificationAudience) {
   if (notification.eventKind === 'promotion_celebration') {
     return {
-      title: 'Promotion recorded',
+      title: 'Promotion celebration',
       detail: audience === 'family'
-        ? 'A promotion has been recorded for one of your linked members.'
+        ? 'A promotion celebration has been recorded for your family.'
         : 'An official Gym 4 promotion has been recorded.',
     };
   }
@@ -45,22 +45,59 @@ function notificationCopy(notification: PromotionNotification, audience: Promoti
   };
 }
 
+function memberName(member: LinkedMember | undefined) {
+  const name = [member?.first_name, member?.last_name].filter(Boolean).join(' ').trim();
+  return name || null;
+}
+
+function currentRank(member: LinkedMember | undefined) {
+  if (!member?.belt_rank) return null;
+  const stripeCount = typeof member.stripes === 'number' && Number.isSafeInteger(member.stripes) && member.stripes >= 0
+    ? member.stripes
+    : null;
+  const stripes = stripeCount !== null
+    ? ` · ${stripeCount} ${stripeCount === 1 ? 'stripe' : 'stripes'}`
+    : '';
+  return `${member.belt_rank} belt${stripes}`;
+}
+
+function isRolloutDisabledError(error: unknown) {
+  return error instanceof Error
+    && 'code' in error
+    && (error as { code?: unknown }).code === '42501'
+    && error.message === 'Promotion notifications are not enabled for this gym.';
+}
+
 export default function PromotionNotificationsScreen() {
   const router = useRouter();
-  const { accessStatus, gymId, linkedGyms, staffRole } = useGymAccess();
+  const { session } = useAuth();
+  const { accessStatus, linkedGyms, linkedMembers, isResolvingAccess, accessError } = useGymAccess();
   const audience = notificationAudience(accessStatus);
   const hasGym4Access = audience === 'family'
-    ? linkedGyms.some((gym) => gym.gym_id === promotionNotificationsCapability.gymId)
-    : audience === 'staff'
-      ? gymId === promotionNotificationsCapability.gymId && (staffRole === 'admin' || staffRole === 'coach')
-      : false;
-  const canLoad = isPromotionNotificationsEnabled() && audience !== null && hasGym4Access;
+    && linkedGyms.some((gym) => gym.gym_id === promotionNotificationsCapability.gymId);
+  const canLoad = Boolean(session && !isResolvingAccess && !accessError && isPromotionNotificationsEnabled() && audience !== null && hasGym4Access);
   const [notifications, setNotifications] = React.useState<PromotionNotification[]>([]);
   const [isLoading, setIsLoading] = React.useState(true);
   const [isRefreshing, setIsRefreshing] = React.useState(false);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [markingId, setMarkingId] = React.useState<number | null>(null);
   const requestVersionRef = React.useRef(0);
+  const markingRef = React.useRef<number | null>(null);
+  const scope = `${session?.user.id ?? 'signed-out'}:${accessStatus}:${linkedGyms.map((gym) => gym.gym_id).join(',')}:${isResolvingAccess}:${accessError ?? ''}`;
+  const membersById = React.useMemo(
+    () => new Map(linkedMembers.map((member) => [member.student_id, member])),
+    [linkedMembers],
+  );
+
+  React.useEffect(() => {
+    requestVersionRef.current += 1;
+    markingRef.current = null;
+    setNotifications([]);
+    setIsLoading(true);
+    setIsRefreshing(false);
+    setLoadError(null);
+    setMarkingId(null);
+  }, [scope]);
 
   const loadNotifications = React.useCallback(async (refresh = false) => {
     const requestVersion = ++requestVersionRef.current;
@@ -79,10 +116,12 @@ export default function PromotionNotificationsScreen() {
       const nextNotifications = await listPromotionNotifications(audience);
       if (requestVersion !== requestVersionRef.current) return;
       setNotifications(nextNotifications);
-    } catch {
+    } catch (error: unknown) {
       if (requestVersion !== requestVersionRef.current) return;
       setNotifications([]);
-      setLoadError('Notifications could not be loaded. Check your connection and try again.');
+      setLoadError(isRolloutDisabledError(error)
+        ? 'Promotion notifications are temporarily unavailable.'
+        : 'Notifications could not be loaded. Check your connection and try again.');
     } finally {
       if (requestVersion === requestVersionRef.current) {
         setIsLoading(false);
@@ -99,19 +138,23 @@ export default function PromotionNotificationsScreen() {
   }, [loadNotifications]));
 
   const markRead = React.useCallback(async (notification: PromotionNotification) => {
-    if (!canLoad || !audience || notification.readAt || markingId !== null) return;
+    if (!canLoad || !audience || notification.readAt || markingRef.current !== null) return;
+    markingRef.current = notification.id;
     setMarkingId(notification.id);
     try {
       await markPromotionNotificationRead(audience, notification.id);
       setNotifications((current) => current.map((item) => (
         item.id === notification.id ? { ...item, readAt: new Date().toISOString() } : item
       )));
-    } catch {
-      setLoadError('This notification is still unread. Try again when you are ready.');
+    } catch (error: unknown) {
+      setLoadError(isRolloutDisabledError(error)
+        ? 'Promotion notifications are temporarily unavailable.'
+        : 'This notification is still unread. Try again when you are ready.');
     } finally {
+      markingRef.current = null;
       setMarkingId(null);
     }
-  }, [audience, canLoad, markingId]);
+  }, [audience, canLoad]);
 
   const unreadCount = notifications.filter((notification) => !notification.readAt).length;
   const unavailable = !canLoad;
@@ -129,6 +172,9 @@ export default function PromotionNotificationsScreen() {
           const unread = !item.readAt;
           const isMarking = markingId === item.id;
           const copy = notificationCopy(item, audience ?? 'staff');
+          const member = audience === 'family' ? membersById.get(item.studentId) : undefined;
+          const name = memberName(member);
+          const rank = currentRank(member);
           return (
             <Pressable
               accessibilityRole="button"
@@ -151,6 +197,9 @@ export default function PromotionNotificationsScreen() {
                   <Text className="mt-1 text-sm leading-5 text-muted-foreground">
                     {copy.detail}
                   </Text>
+                  {audience === 'family' && name ? <Text className="mt-3 text-sm font-semibold text-foreground">{name}</Text> : null}
+                  {audience === 'family' && rank ? <Text className="mt-1 text-xs leading-5 text-muted-foreground">Current recorded rank: {rank}</Text> : null}
+                  {audience === 'family' && !name && !rank ? <Text className="mt-3 text-xs leading-5 text-muted-foreground">Current member details are unavailable for this notification.</Text> : null}
                   <View className="mt-3 flex-row items-center justify-between">
                     <Text className="text-xs font-medium text-muted-foreground">{formatTimestampDate(item.createdAt)}</Text>
                     {isMarking ? <Text className="text-xs font-semibold text-muted-foreground">Marking read…</Text> : unread ? <Text className="text-xs font-bold text-primary">Tap to mark read</Text> : <Text className="text-xs font-semibold text-muted-foreground">Read</Text>}

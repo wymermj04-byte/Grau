@@ -18,13 +18,13 @@ const isDevelopmentPreview = process.env.NODE_ENV === 'development';
 export default function SettingsScreen() {
   const router = useRouter();
   const { signOut } = useAuth();
-  const { linkedMembers, gymId, staffRole } = useGymAccess();
+  const { accessStatus, linkedMembers, linkedGyms } = useGymAccess();
   const { themePreference, setThemePreference } = useTheme();
   const messagingReadOnlyTestEnabled = isMessagingReadOnlyTestEnabled();
   const messagingControlledTestEnabled = isMessagingControlledTestEnabled();
   const canOpenPromotionNotifications = isPromotionNotificationsEnabled()
-    && gymId === promotionNotificationsCapability.gymId
-    && (staffRole === 'admin' || staffRole === 'coach');
+    && accessStatus === 'family'
+    && linkedGyms.some((gym) => gym.gym_id === promotionNotificationsCapability.gymId);
   const [isSigningOut, setIsSigningOut] = React.useState(false);
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
 

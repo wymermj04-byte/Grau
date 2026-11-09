@@ -37,6 +37,9 @@ import { isMessagingReadOnlyTestEnabled } from '@/lib/messaging-readonly-test-fe
 import { isMessagingControlledTestEnabled } from '@/lib/messaging-controlled-test-feature';
 import { FAMILY_SELF_CHECK_IN_GYM_ID, isSelfCheckInEnabledForGym, isSelfCheckInPreviewEnabled } from '@/lib/self-check-in-feature';
 import { isFamilySelfCheckInAuthorizationTestEnabled } from '@/lib/family-self-check-in-authorization-test-feature';
+import { isFamilyLinkTestApprovalUtilityEnabled } from '@/lib/family-link-test-approval-feature';
+import { isPromotionNotificationControlledTestEnabled } from '@/lib/promotion-notification-controlled-test-feature';
+import { isPromotionNotificationFamilyReadOnlyTestEnabled, promotionNotificationFamilyReadOnlyTestCapability } from '@/lib/promotion-notification-family-readonly-test-feature';
 import { PasswordSetupProvider } from '@/providers/PasswordSetupProvider';
 import { INVITE_ACCEPT_PATH, bypassesGymAccessGuard } from '@/lib/auth-route-guard';
 
@@ -63,6 +66,9 @@ function RootContent() {
   const selfCheckInPreviewEnabled = isSelfCheckInPreviewEnabled();
   const selfCheckInGymEnabled = isSelfCheckInEnabledForGym(FAMILY_SELF_CHECK_IN_GYM_ID);
   const familySelfCheckInAuthorizationTestEnabled = isFamilySelfCheckInAuthorizationTestEnabled();
+  const familyLinkTestApprovalUtilityEnabled = isFamilyLinkTestApprovalUtilityEnabled();
+  const promotionNotificationControlledTestEnabled = isPromotionNotificationControlledTestEnabled();
+  const promotionNotificationFamilyReadOnlyTestEnabled = isPromotionNotificationFamilyReadOnlyTestEnabled();
   const pathname = usePathname();
   const [isColorSchemeLoaded, setIsColorSchemeLoaded] = React.useState(false);
   const [isSigningOut, setIsSigningOut] = React.useState(false);
@@ -226,14 +232,23 @@ function RootContent() {
             && session
             && !isResolvingAccess
             && !accessError
-            && (
-              (accessStatus === 'family' && linkedGyms.some((gym) => gym.gym_id === promotionNotificationsCapability.gymId))
-              || (accessStatus === 'staff'
-                && gymId === promotionNotificationsCapability.gymId
-                && (staffRole === 'admin' || staffRole === 'coach'))
-            )
+            && accessStatus === 'family'
+            && linkedGyms.some((gym) => gym.gym_id === promotionNotificationsCapability.gymId)
           )}>
             <Stack.Screen name="promotion-notifications" options={{ headerShown: false }} />
+          </Stack.Protected>
+          <Stack.Protected guard={Boolean(
+            session
+            && !isResolvingAccess
+            && !accessError
+            && accessStatus === 'family'
+            && (
+              (messagingEnabled && linkedGyms.length > 0)
+              || (promotionNotificationsEnabled
+                && linkedGyms.some((gym) => gym.gym_id === promotionNotificationsCapability.gymId))
+            )
+          )}>
+            <Stack.Screen name="notifications" options={{ headerShown: false }} />
           </Stack.Protected>
           <Stack.Protected guard={canCreateAnnouncements}>
             <Stack.Screen name="announcements/create" options={{ headerShown: false }} />
@@ -265,6 +280,15 @@ function RootContent() {
           </Stack.Protected>
           <Stack.Protected guard={Boolean(session && !isResolvingAccess && !accessError && isDevelopmentPreview && familySelfCheckInAuthorizationTestEnabled && ((accessStatus === 'family' && linkedGyms.some((gym) => gym.gym_id === 4)) || (accessStatus === 'staff' && gymId === 4 && (staffRole === 'admin' || staffRole === 'coach'))))}>
             <Stack.Screen name="dev/family-self-check-in-authorization" options={{ headerShown: false }} />
+          </Stack.Protected>
+          <Stack.Protected guard={Boolean(session && !isResolvingAccess && !accessError && isDevelopmentPreview && familyLinkTestApprovalUtilityEnabled && accessStatus === 'staff' && gymId === 4 && staffRole === 'admin')}>
+            <Stack.Screen name="dev/approve-notification-test-family-link" options={{ headerShown: false }} />
+          </Stack.Protected>
+          <Stack.Protected guard={Boolean(session && !isResolvingAccess && !accessError && isDevelopmentPreview && promotionNotificationControlledTestEnabled && accessStatus === 'staff' && gymId === 4 && staffRole === 'admin')}>
+            <Stack.Screen name="dev/promotion-notification-controlled-test" options={{ headerShown: false }} />
+          </Stack.Protected>
+          <Stack.Protected guard={Boolean(session && !isResolvingAccess && !accessError && isDevelopmentPreview && promotionNotificationFamilyReadOnlyTestEnabled && accessStatus === 'family' && linkedGyms.some((gym) => gym.gym_id === promotionNotificationFamilyReadOnlyTestCapability.gymId))}>
+            <Stack.Screen name="dev/family-promotion-notification-inbox" options={{ headerShown: false }} />
           </Stack.Protected>
         </Stack>
         {
