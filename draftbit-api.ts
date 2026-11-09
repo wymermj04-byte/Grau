@@ -6,7 +6,7 @@
 
 const runtimeManifest = {
   "rest": {
-    "generatedAt": "2026-11-09T18:05:55.251Z",
+    "generatedAt": "2026-11-09T20:59:23.087Z",
     "importPath": "@/draftbit-api",
     "endpoints": {
       "supabase-reset__get__students": {
