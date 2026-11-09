@@ -1,15 +1,32 @@
-
 name: Promotion notification worker
 
 on:
   workflow_dispatch:
     inputs:
       confirmation:
-        description: Confirm the single disabled-state test
+        description: Select the worker test to run
         required: true
         type: choice
+        default: disabled-state-test
         options:
           - disabled-state-test
+          - controlled-delivery-test
+      queue_check_confirmation:
+        description: Confirm the separate Main database queue check was reviewed before delivery
+        required: true
+        type: choice
+        default: queue-check-not-confirmed
+        options:
+          - queue-check-not-confirmed
+          - queue-check-reviewed
+      delivery_confirmation:
+        description: Confirm the single controlled worker delivery request
+        required: true
+        type: choice
+        default: delivery-not-approved
+        options:
+          - delivery-not-approved
+          - delivery-approved
 
 permissions: {}
 
@@ -18,12 +35,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate-controlled-delivery:
+    if: ${{ inputs.confirmation == 'controlled-delivery-test' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require queue review and delivery confirmation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ inputs.queue_check_confirmation }}" != "queue-check-reviewed" ]; then
+            echo "A separate Main database queue check must be reviewed before controlled delivery."
+            exit 1
+          fi
+
+          if [ "${{ inputs.delivery_confirmation }}" != "delivery-approved" ]; then
+            echo "Controlled delivery was not explicitly approved."
+            exit 1
+          fi
+
   disabled-state-test:
-    if: inputs.confirmation == 'disabled-state-test'
+    if: ${{ inputs.confirmation == 'disabled-state-test' }}
     runs-on: ubuntu-latest
     environment: main-supabase-worker
     timeout-minutes: 2
-
     steps:
       - name: Verify disabled worker response
         env:
@@ -46,6 +82,7 @@ jobs:
               --output "$response_file" \
               --write-out '%{http_code}' \
               --max-time 30 \
+              --retry 0 \
               --request POST \
               --header "apikey: ${WORKER_SECRET_KEY}" \
               "${WORKER_URL}"
@@ -67,3 +104,72 @@ jobs:
           fi
 
           echo '{"ok":true,"disabled":true}'
+
+  controlled-delivery-test:
+    needs: validate-controlled-delivery
+    if: ${{ inputs.confirmation == 'controlled-delivery-test' }}
+    runs-on: ubuntu-latest
+    environment: main-supabase-worker
+    timeout-minutes: 2
+    steps:
+      - name: Verify controlled delivery worker response
+        env:
+          WORKER_URL: ${{ vars.SUPABASE_PROMOTION_WORKER_URL }}
+          WORKER_SECRET_KEY: ${{ secrets.SUPABASE_PROMOTION_WORKER_SECRET_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "$WORKER_URL" ] || [ -z "$WORKER_SECRET_KEY" ]; then
+            echo "Worker configuration is missing."
+            exit 1
+          fi
+
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+
+          http_status="$(
+            curl --silent --show-error \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
+              --max-time 30 \
+              --retry 0 \
+              --request POST \
+              --header "apikey: ${WORKER_SECRET_KEY}" \
+              "${WORKER_URL}"
+          )"
+
+          if [ "$http_status" != "200" ]; then
+            echo "Unexpected worker HTTP status."
+            exit 1
+          fi
+
+          if ! jq -e '
+            type == "object"
+            and (keys | sort == ["ok", "result"])
+            and .ok == true
+            and (.result | type == "object")
+            and (
+              .result
+              | keys
+              | sort
+              == ["dead_lettered", "delivered", "processed", "retried"]
+            )
+            and (
+              [
+                .result.processed,
+                .result.delivered,
+                .result.retried,
+                .result.dead_lettered
+              ]
+              | all(
+                  .[];
+                  (type == "number" and . >= 0 and floor == .)
+                )
+            )
+          ' "$response_file" >/dev/null; then
+            echo "Worker did not return a complete valid delivery result."
+            exit 1
+          fi
+
+          echo "Controlled delivery worker response validated."
