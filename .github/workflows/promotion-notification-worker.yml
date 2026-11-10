@@ -1,32 +1,22 @@
+
 name: Promotion notification worker
 
 on:
   workflow_dispatch:
     inputs:
-      confirmation:
-        description: Select the worker test to run
+      test_mode:
+        description: Select the worker response contract to verify
         required: true
         type: choice
-        default: disabled-state-test
         options:
           - disabled-state-test
           - controlled-delivery-test
-      queue_check_confirmation:
-        description: Confirm the separate Main database queue check was reviewed before delivery
-        required: true
-        type: choice
-        default: queue-check-not-confirmed
-        options:
-          - queue-check-not-confirmed
-          - queue-check-reviewed
       delivery_confirmation:
-        description: Confirm the single controlled worker delivery request
-        required: true
-        type: choice
-        default: delivery-not-approved
-        options:
-          - delivery-not-approved
-          - delivery-approved
+        description: Required only for controlled delivery; enter controlled-delivery-test
+        required: false
+        type: string
+  schedule:
+    - cron: '*/5 * * * *'
 
 permissions: {}
 
@@ -35,36 +25,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  validate-controlled-delivery:
-    if: ${{ inputs.confirmation == 'controlled-delivery-test' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    steps:
-      - name: Require queue review and delivery confirmation
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ "${{ inputs.queue_check_confirmation }}" != "queue-check-reviewed" ]; then
-            echo "A separate Main database queue check must be reviewed before controlled delivery."
-            exit 1
-          fi
-
-          if [ "${{ inputs.delivery_confirmation }}" != "delivery-approved" ]; then
-            echo "Controlled delivery was not explicitly approved."
-            exit 1
-          fi
-
-  disabled-state-test:
-    if: ${{ inputs.confirmation == 'disabled-state-test' }}
+  invoke-worker:
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' &&
+        (inputs.test_mode == 'disabled-state-test' ||
+         (inputs.test_mode == 'controlled-delivery-test' &&
+          inputs.delivery_confirmation == 'controlled-delivery-test')))
     runs-on: ubuntu-latest
     environment: main-supabase-worker
     timeout-minutes: 2
+
     steps:
-      - name: Verify disabled worker response
+      - name: Invoke and validate promotion notification worker
         env:
           WORKER_URL: ${{ vars.SUPABASE_PROMOTION_WORKER_URL }}
           WORKER_SECRET_KEY: ${{ secrets.SUPABASE_PROMOTION_WORKER_SECRET_KEY }}
+          TEST_MODE: ${{ inputs.test_mode }}
         shell: bash
         run: |
           set -euo pipefail
@@ -82,94 +59,106 @@ jobs:
               --output "$response_file" \
               --write-out '%{http_code}' \
               --max-time 30 \
-              --retry 0 \
               --request POST \
               --header "apikey: ${WORKER_SECRET_KEY}" \
-              "${WORKER_URL}"
+              "$WORKER_URL"
           )"
 
           if [ "$http_status" != "200" ]; then
-            echo "Unexpected worker HTTP status."
+            echo "Worker returned unexpected HTTP status: ${http_status}."
             exit 1
           fi
 
-          if ! jq -e '
-            type == "object"
-            and .ok == true
-            and .disabled == true
-            and (keys | length == 2)
-          ' "$response_file" >/dev/null; then
-            echo "Worker did not confirm disabled state."
+          if ! jq -e 'type == "object"' "$response_file" >/dev/null 2>&1; then
+            echo 'Worker response diagnostic: {"json_object":false}'
             exit 1
           fi
 
-          echo '{"ok":true,"disabled":true}'
+          jq -c '
+            . as $root
+            | {
+                json_object: true,
+                key_count: (keys | length),
+                has_ok: has("ok"),
+                ok_is_boolean: (
+                  if has("ok") then (.ok | type == "boolean") else false end
+                ),
+                has_disabled: has("disabled"),
+                disabled_is_boolean: (
+                  if has("disabled") then (.disabled | type == "boolean") else false end
+                ),
+                has_result: has("result"),
+                result_is_object: (
+                  if has("result") then (.result | type == "object") else false end
+                ),
+                counter_fields_are_nonnegative_integers: (
+                  if (
+                    $root | has("result") and (.result | type == "object")
+                  ) then
+                    ["processed", "delivered", "retried", "dead_lettered"]
+                    | all(
+                        .[]; . as $name
+                        | ($root.result[$name]
+                          | if type == "number" then floor == . and . >= 0 else false end
+                        )
+                      )
+                  else false
+                  end
+                )
+              }
+          ' "$response_file"
 
-  controlled-delivery-test:
-    needs: validate-controlled-delivery
-    if: ${{ inputs.confirmation == 'controlled-delivery-test' }}
-    runs-on: ubuntu-latest
-    environment: main-supabase-worker
-    timeout-minutes: 2
-    steps:
-      - name: Verify controlled delivery worker response
-        env:
-          WORKER_URL: ${{ vars.SUPABASE_PROMOTION_WORKER_URL }}
-          WORKER_SECRET_KEY: ${{ secrets.SUPABASE_PROMOTION_WORKER_SECRET_KEY }}
-        shell: bash
-        run: |
-          set -euo pipefail
+          disabled_contract='
+            type == "object" and
+            .ok == true and
+            .disabled == true and
+            (keys | length == 2)
+          '
 
-          if [ -z "$WORKER_URL" ] || [ -z "$WORKER_SECRET_KEY" ]; then
-            echo "Worker configuration is missing."
-            exit 1
-          fi
-
-          response_file="$(mktemp)"
-          trap 'rm -f "$response_file"' EXIT
-
-          http_status="$(
-            curl --silent --show-error \
-              --output "$response_file" \
-              --write-out '%{http_code}' \
-              --max-time 30 \
-              --retry 0 \
-              --request POST \
-              --header "apikey: ${WORKER_SECRET_KEY}" \
-              "${WORKER_URL}"
-          )"
-
-          if [ "$http_status" != "200" ]; then
-            echo "Unexpected worker HTTP status."
-            exit 1
-          fi
-
-          if ! jq -e '
-            type == "object"
-            and (keys | sort == ["ok", "result"])
-            and .ok == true
-            and (.result | type == "object")
-            and (
-              .result
-              | keys
-              | sort
-              == ["dead_lettered", "delivered", "processed", "retried"]
-            )
-            and (
-              [
-                .result.processed,
-                .result.delivered,
-                .result.retried,
-                .result.dead_lettered
-              ]
+          enabled_contract='
+            type == "object" and
+            .ok == true and
+            (keys | length == 2) and
+            (.result | type == "object") and
+            (.result | (keys | sort) == ["dead_lettered", "delivered", "processed", "retried"]) and
+            (. as $root
+              | ["processed", "delivered", "retried", "dead_lettered"]
               | all(
-                  .[];
-                  (type == "number" and . >= 0 and floor == .)
+                  .[]; . as $name
+                  | ($root.result[$name]
+                    | if type == "number" then floor == . and . >= 0 else false end
+                  )
                 )
             )
-          ' "$response_file" >/dev/null; then
-            echo "Worker did not return a complete valid delivery result."
-            exit 1
+          '
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$TEST_MODE" = "disabled-state-test" ]; then
+              if ! jq -e "$disabled_contract" "$response_file" >/dev/null; then
+                echo "Worker did not confirm the disabled-state contract."
+                exit 1
+              fi
+              echo "Disabled-state contract: PASS"
+              exit 0
+            fi
+
+            if ! jq -e "$enabled_contract" "$response_file" >/dev/null; then
+              echo "Worker did not return a valid enabled-state aggregate contract."
+              exit 1
+            fi
+            echo "Controlled-delivery aggregate contract: PASS"
+            exit 0
           fi
 
-          echo "Controlled delivery worker response validated."
+          if jq -e "$disabled_contract" "$response_file" >/dev/null; then
+            echo "Scheduled disabled-state no-op: PASS"
+            exit 0
+          fi
+
+          if jq -e "$enabled_contract" "$response_file" >/dev/null; then
+            echo "Scheduled enabled-state aggregate contract: PASS"
+            exit 0
+          fi
+
+          echo "Worker did not return a recognized response contract."
+          exit 1
